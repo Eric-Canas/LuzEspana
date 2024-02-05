@@ -68,7 +68,8 @@ class PricesDownloader:
         with ThreadPoolExecutor() as executor:
             files = []
             for i in tqdm(range(0, (end_date - start_date).days + 1, _batch_size), desc="Downloading prices"):
-                batch_files = list(executor.map(self.download_day, [start_date + timedelta(days=i + j) for j in range(_batch_size)]))
+                batch_size = min(_batch_size, (end_date - start_date).days - i + 1)
+                batch_files = list(executor.map(self.download_day, [start_date + timedelta(days=i + j) for j in range(batch_size)]))
                 # Flatten the list
                 batch_files = [file for sublist in batch_files for file in sublist]
                 files.extend(batch_files)
@@ -84,17 +85,18 @@ class PricesDownloader:
         """
         assert os.path.isfile(xls_path), f"File {xls_path} does not exist"
         file_dirs = {}
-        for sheet_name, folder_path in SHEET_NAMES_TO_FOLDER.items():
-            if not os.path.isdir(folder_path):
-                logger.warning(f"Folder {folder_path} does not exist. Creating it")
-                os.mkdir(folder_path)
+        for sheet_name, location_folder_path in SHEET_NAMES_TO_FOLDER.items():
+            with self.lock:
+                if not os.path.isdir(location_folder_path):
+                    logger.warning(f"Folder {location_folder_path} does not exist. Creating it")
+                    os.mkdir(location_folder_path)
             try:
                 data = pd.read_excel(xls_path, sheet_name=sheet_name)
             except ValueError as e:
                 # Old versions came this way
                 sheet_name = "Tabla de Datos"
                 data = pd.read_excel(xls_path, sheet_name=sheet_name)
-
+            location = os.path.basename(location_folder_path)
             # Clean data because it comes as comes
             data = data.dropna(axis=0, how='all').dropna(axis=1, how='all')
             data = data.iloc[3:]  # 3 First rows are just headers
@@ -111,11 +113,11 @@ class PricesDownloader:
 
             # Format date from 2020-01-01 00:00:00 to 2020-01-01
             data['date'] = data['date'].apply(lambda x: x.strftime(EXPECTED_DATE_FORMAT))
-
+            data['location'] = location
             # Save one file per toll
             for toll in data['toll'].unique():
                 data_toll = data[data['toll'] == toll]
-                csv_path = os.path.join(folder_path, toll, f"{data['date'].iloc[0]}.csv")
+                csv_path = os.path.join(location_folder_path, toll, f"{data['date'].iloc[0]}.csv")
                 with self.lock:
                     if not os.path.isdir(os.path.dirname(csv_path)):
                         logger.warning(f"Folder {os.path.dirname(csv_path)} does not exist. Creating it")

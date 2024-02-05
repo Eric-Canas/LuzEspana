@@ -1,3 +1,5 @@
 loguru
 firebase-admin
 xlrd
+pandas
+tqdm

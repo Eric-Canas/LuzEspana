@@ -1,7 +1,12 @@
 import os
+from collections import defaultdict
 from datetime import datetime
 import pandas as pd
 
+from data_management.constants import PVPC_PRICES, LOCATIONS, TOLLS, NO_AGGREGATION, PRICES, LOCATION_DESCRIPTIONS, \
+    BY_DAY
+
+CHECKED_LOCATIONS, CHECKED_TOLLS = {NO_AGGREGATION: set(), BY_DAY: set()}, {NO_AGGREGATION: defaultdict(set), BY_DAY: defaultdict(set)}
 
 def load_csv_as_dicts(csv_path: str, datetime_column_name: str = 'datetime_spain') -> list[dict]:
     """
@@ -10,9 +15,11 @@ def load_csv_as_dicts(csv_path: str, datetime_column_name: str = 'datetime_spain
     :param csv_path: str. Path to the csv file to post
     :return: list[dict]. List of dictionaries with the data from the csv file
     """
-    # Leer el archivo CSV
+    # Read the csv
     df = pd.read_csv(filepath_or_buffer=csv_path, sep=',')
-
+    # If the day contains 25 hours, that's a winter time change, let's assume the last hour never existed
+    if len(df) == 25:
+        df = df[:-1]
     # Build a date time column
     df[datetime_column_name] = df.apply(
         lambda row: datetime.strptime(f"{row['date']} {row['hour']}:00", "%Y-%m-%d %H:%M"), axis=1)
@@ -51,7 +58,7 @@ def get_all_files_with_filename_in_subfolders(parent_folder: str, filename: str)
 
     return files_dict
 
-def get_doc_id_for_row(row: dict[str, str | datetime | float | int], location: str = 'PCB') -> str:
+def get_doc_id_for_row(row: dict[str, str | datetime | float | int]) -> str:
     """
     Get the document id for a given row
 
@@ -62,4 +69,46 @@ def get_doc_id_for_row(row: dict[str, str | datetime | float | int], location: s
     :return: str. Document id
     """
     datetime_spain = row['datetime_spain'].strftime("%Y-%m-%d--%H:00")
-    return f"{datetime_spain}--{location}-{row['toll']}"
+    return f"{datetime_spain}--{row['location']}-{row['toll']}"
+
+def get_collection_name(location: str = 'PCB', toll: str = '2.0TD', optimization: str = 'NO-OPTIMIZATION') -> str:
+    """
+    Get the collection name for a given location and toll
+
+    :param location: str. Location of the data [PCB (Peninsula, Canarias, Baleares) or CYM (Ceuta, Melilla)]
+    :param toll: str. Toll of the data (2.0TD, 2.0A, 2.0DHA, 2.0DHS...)
+
+    :return: str. Collection name
+    """
+    return f"{location}--{toll}--{optimization}"
+
+def get_collection(client, location: str = 'PCB', toll: str = '2.0TD', aggregation: str = NO_AGGREGATION):
+    """
+    Returns a collection ref, hidding the subcollections logic
+    :param client: Firestore client
+    :param location: str. Location of the data [PCB (Peninsula, Canarias, Baleares) or CYM (Ceuta, Melilla)]
+    :param toll: str. Toll of the data (2.0TD, 2.0A, 2.0DHA, 2.0-DHS...)
+    :param aggregation: str. Aggregation of the data (NO_AGGREGATION, BY_DAY, BY_MONTH)
+    :return: Collection ref
+    """
+    toll = toll.replace('.', '-')
+    global CHECKED_LOCATIONS, CHECKED_TOLLS
+    if location not in CHECKED_LOCATIONS[aggregation]:
+        # Check if location is an existent document
+        document_ref = client.collection(PVPC_PRICES).document(aggregation).collection(LOCATIONS).\
+            document(location)
+        if not document_ref.get().exists:
+            document_ref.set({'name': LOCATION_DESCRIPTIONS[location]})
+        CHECKED_LOCATIONS[aggregation].add(location)
+
+    if toll not in CHECKED_TOLLS[aggregation][location]:
+        # Check if toll is an existent document
+        document_ref = client.collection(PVPC_PRICES).document(aggregation).collection(LOCATIONS).\
+            document(location).collection(TOLLS).document(toll)
+        if not document_ref.get().exists:
+            document_ref.set({'name': toll.replace('-', '.')})
+        CHECKED_TOLLS[aggregation][location].add(toll)
+
+
+    return client.collection(PVPC_PRICES).document(aggregation).collection(LOCATIONS).\
+        document(location).collection(TOLLS).document(toll).collection(PRICES)
